@@ -1,0 +1,55 @@
+{
+  "name": "dsh-wait-guard",
+  "version": "0.1.0",
+  "description": "Bounded waiting for DeepSeek Harness: caps job_output wait budgets, refuses runaway foreground commands nested in run_code, and explains run_code's own deadline instead of letting it read like a task limit. 让「等」变成有预算的探测，而不是把回合挂住。",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0",
+    "dsh": ">=0.2.0-0"
+  },
+  "peerDependencies": {
+    "cordis": ">=4.0.0",
+    "@deepseek-ai/dsh-tools": ">=0.2.0-0",
+    "@deepseek-ai/dsh-jobs": ">=0.2.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-jobs": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build": "node --check src/index.js",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "jobs",
+    "background",
+    "timeout",
+    "guard",
+    "plugin"
+  ],
+  "license": "MIT"
+}
