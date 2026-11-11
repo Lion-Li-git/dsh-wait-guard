@@ -9,5 +9,7 @@ export interface WaitGuardConfig {
   defaultWaitMs?: number;
   slowProgramMs?: number;
   programDeadlineMs?: number;
+  probeLimit?: number;
+  probeWindowMs?: number;
 }
 export declare function apply(ctx: Context, config?: WaitGuardConfig): void;

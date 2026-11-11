@@ -1,7 +1,7 @@
 {
   "name": "dsh-wait-guard",
-  "version": "0.1.0",
-  "description": "Bounded waiting for DeepSeek Harness: caps job_output wait budgets, refuses runaway foreground commands nested in run_code, and explains run_code's own deadline instead of letting it read like a task limit. 让「等」变成有预算的探测，而不是把回合挂住。",
+  "version": "0.2.0",
+  "description": "Bounded waiting and no-progress polling breaker for DeepSeek Harness: caps job_output wait budgets, refuses runaway foreground commands nested in run_code, explains run_code deadlines and parse errors, and stops status-polling loops after four no-progress probes. 让「等」和「轮询」都有预算。",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
@@ -40,6 +40,7 @@
   },
   "scripts": {
     "build": "node --check src/index.js",
+    "test": "node --test",
     "prepack": "npm run build"
   },
   "keywords": [
@@ -48,6 +49,9 @@
     "jobs",
     "background",
     "timeout",
+    "polling",
+    "loop",
+    "status",
     "guard",
     "plugin"
   ],
