@@ -25,13 +25,17 @@
 //      logs, processes or the clock; or a direct no-wait job_output) inside
 //      120 s are denied: answer from the state already known and end the turn.
 //      A work call resets the counter, so normal long tasks are untouched.
-//   5. A JS parse error gets a hint naming unescaped backticks.
+//   5. Three consecutive no-op run_code calls (a constant console.log, an empty
+//      program, or description "No-op") are denied: write the answer in text.
+//      A work call resets both counters; a status probe does not reset the
+//      no-op counter, so alternating the two cannot evade either one.
+//   6. A JS parse error gets a hint naming unescaped backticks.
 //
 // Everything fails open: unknown tools, missing services, missing jobs.
 //
 // Config (all optional, milliseconds):
 //   perCallMaxMs, youngMs, totalBudgetMs, defaultWaitMs,
-//   slowProgramMs, programDeadlineMs, probeLimit, probeWindowMs
+//   slowProgramMs, programDeadlineMs, probeLimit, probeWindowMs, noopLimit
 
 const name = 'dsh-wait-guard';
 const inject = ['tools'];
@@ -44,7 +48,8 @@ const DEFAULTS = Object.freeze({
 	slowProgramMs: 45000,
 	programDeadlineMs: 120000,
 	probeLimit: 4,
-	probeWindowMs: 120000
+	probeWindowMs: 120000,
+	noopLimit: 3
 });
 
 const DEADLINE_HINT = '[wait-guard] execution deadline reached is run_code own program budget, not a limit on the task or on the command. The nested call was aborted at that deadline; whatever the command already did stays done. For anything that may outlive the program, do not nest it: call pwsh with run_in_background: true, then end the turn - the completion notice opens the next one.';
@@ -60,6 +65,11 @@ const STATUS_RE = /\bjob_output\s*\(|Get-CimInstance|Get-Date\b|Get-Content\b[^\
 const WORK_RE = /writeFileSync|writeFile\s*\(|appendFileSync|Set-Content|Add-Content|Out-File|Start-Process|git\s+(add|commit|checkout|push|reset|merge)|npm\s+(install|run)|node\s+tools\/|tools\.(write|edit)\s*\(|renameSync|copyFileSync|unlinkSync|mkdirSync/i;
 
 const PARSE_RE = /Expected ',', got 'ident'|Unexpected token|Invalid or unexpected token/i;
+
+// A run_code that does nothing: description "No-op", an empty program, or a
+// single constant console.log. This is the shape of the 11-13 loop (t74/t75).
+const NOOP_DESC_RE = /^\s*no[\s-]?op\s*$/i;
+const CONST_LOG_RE = /^console\.log\(\s*(["'`])(.*)\1\s*\)\s*;?$/;
 
 function parseHint(code) {
 	const ticks = typeof code === 'string' ? (code.match(/`/g) || []).length : 0;
@@ -79,6 +89,7 @@ function apply(ctx, config) {
 	const inflight = new WeakMap();
 	const started = new WeakMap();
 	const probes = new Map();
+	const noops = new Map();
 
 	const argsOf = (exec) => {
 		const a = exec && exec.arguments;
@@ -123,13 +134,58 @@ function apply(ctx, config) {
 		st.denied += 1;
 		return { kind: 'deny', reason: probeDenyReason(st) };
 	};
-	// Returns a deny for a no-progress status probe, otherwise null.
+	const noopAt = (exec) => {
+		const key = probeKey(exec);
+		let st = noops.get(key);
+		if (!st) {
+			st = { count: 0, lastAt: 0, denied: 0 };
+			noops.set(key, st);
+		}
+		return st;
+	};
+	const noopDenyReason = (st) =>
+		'[loop-guard] no-op run_code #' + st.count + ': this program only prints a constant and does nothing. ' +
+		'Do not call run_code again; write the final answer in the assistant text now. ' +
+		( st.denied >= 2
+			? 'This is denial #' + st.denied + ': every further no-op call this turn will be denied.'
+			: '别再发空调用，直接输出文本回答。' );
+	const noopBump = (exec, isNoop) => {
+		const now = Date.now();
+		const st = noopAt(exec);
+		if (now - st.lastAt > cfg.probeWindowMs) {
+			st.count = 0;
+			st.denied = 0;
+		}
+		st.lastAt = now;
+		if (!isNoop) {
+			st.count = 0;
+			st.denied = 0;
+			return null;
+		}
+		st.count += 1;
+		if (st.count < cfg.noopLimit) return null;
+		st.denied += 1;
+		return { kind: 'deny', reason: noopDenyReason(st) };
+	};
+	const isNoop = (a) => {
+		const desc = typeof a.description === 'string' ? a.description : '';
+		if (NOOP_DESC_RE.test(desc)) return true;
+		const code = typeof a.code === 'string' ? a.code : '';
+		const compact = code.replace(/\s+/g, ' ').trim();
+		if (!compact) return true;
+		if (/^return;?$/i.test(compact)) return true;
+		if (/^\/\//.test(compact)) return true;
+		return CONST_LOG_RE.test(compact);
+	};
+	// Returns a deny for a no-progress call, otherwise null.
 	const probeCheck = (exec) => {
 		const a = argsOf(exec);
 		if (exec.name === 'run_code') {
 			const code = typeof a.code === 'string' ? a.code : '';
-			if (!code) return null;
-			return probeBump(exec, !WORK_RE.test(code) && STATUS_RE.test(code));
+			if (!code || isNoop(a)) return noopBump(exec, true);
+			const probe = !WORK_RE.test(code) && STATUS_RE.test(code);
+			if (!probe) noopBump(exec, false); // real work resets the no-op count
+			return probeBump(exec, probe);
 		}
 		const direct = exec.parent === undefined || exec.parent === null;
 		if (exec.name === 'job_output' && direct) {
@@ -140,10 +196,13 @@ function apply(ctx, config) {
 			if (a.run_in_background === true) return null;
 			const cmd = typeof a.command === 'string' ? a.command : '';
 			if (!cmd) return null;
-			return probeBump(exec, !WORK_RE.test(cmd) && STATUS_RE.test(cmd));
+			const probe = !WORK_RE.test(cmd) && STATUS_RE.test(cmd);
+			if (!probe) noopBump(exec, false);
+			return probeBump(exec, probe);
 		}
 		if (exec.name === 'write' || exec.name === 'edit' || exec.name === 'apply_patch') {
 			probeBump(exec, false);
+			noopBump(exec, false);
 		}
 		return null;
 	};

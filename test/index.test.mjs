@@ -25,7 +25,7 @@ function makeCtx(config) {
 }
 
 const agent = { id: 'agent-1' };
-const run = (code) => ({ name: 'run_code', agent, arguments: { code, description: 'test' } });
+const run = (code, description = 'test') => ({ name: 'run_code', agent, arguments: { code, description } });
 const jobOut = (job_id, extra = {}) => ({ name: 'job_output', agent, arguments: { job_id, ...extra } });
 const pwsh = (command, extra = {}) => ({ name: 'pwsh', agent, arguments: { command, ...extra } });
 
@@ -109,6 +109,49 @@ test('nested pwsh timeout above the program deadline is still denied', () => {
 	assert.equal(denied.kind, 'deny');
 	assert.match(denied.reason, /foreground command asks for/);
 });
+
+test('three no-op run_code calls are denied, the fourth escalates', () => {
+	const c = makeCtx();
+	assert.equal(c.pre(run('console.log("done");', 'No-op')).kind, 'next');
+	assert.equal(c.pre(run('console.log("final");', 'No-op')).kind, 'next');
+	const third = c.pre(run('console.log("answer");', 'No-op'));
+	assert.equal(third.kind, 'deny');
+	assert.match(third.reason, /no-op run_code #3/);
+	const fourth = c.pre(run('console.log("stop");', 'No-op'));
+	assert.equal(fourth.kind, 'deny');
+	assert.match(fourth.reason, /denial #2/);
+});
+
+test('a constant console.log is a no-op even without the No-op description', () => {
+	const c = makeCtx();
+	assert.equal(c.pre(run('console.log("ok")')).kind, 'next');
+	assert.equal(c.pre(run("console.log('ready')")).kind, 'next');
+	assert.equal(c.pre(run('console.log(`done`)')).kind, 'deny');
+});
+
+test('an empty program and a No-op description are counted', () => {
+	const c = makeCtx();
+	c.pre(run(''));
+	c.pre(run('   '));
+	assert.equal(c.pre(run('const x = 1;', 'No-op')).kind, 'deny');
+});
+
+test('a work call resets the no-op counter', () => {
+	const c = makeCtx();
+	c.pre(run('console.log("done")'));
+	c.pre(run('console.log("done")'));
+	assert.equal(c.pre(run(WORK)).kind, 'next');
+	assert.equal(c.pre(run('console.log("done")')).kind, 'next');
+});
+
+test('a status probe between no-ops does not reset the no-op counter', () => {
+	const c = makeCtx();
+	assert.equal(c.pre(run('console.log("done")')).kind, 'next');
+	assert.equal(c.pre(run(STATUS)).kind, 'next');
+	assert.equal(c.pre(run('console.log("done")')).kind, 'next');
+	assert.equal(c.pre(run('console.log("done")')).kind, 'deny');
+});
+
 
 test('a JS parse error gets the backtick hint exactly once', () => {
 	const c = makeCtx();

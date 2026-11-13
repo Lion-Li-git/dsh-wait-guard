@@ -11,5 +11,6 @@ export interface WaitGuardConfig {
   programDeadlineMs?: number;
   probeLimit?: number;
   probeWindowMs?: number;
+  noopLimit?: number;
 }
 export declare function apply(ctx: Context, config?: WaitGuardConfig): void;
