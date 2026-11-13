@@ -152,6 +152,50 @@ test('a status probe between no-ops does not reset the no-op counter', () => {
 	assert.equal(c.pre(run('console.log("done")')).kind, 'deny');
 });
 
+test('the second no-op denial cancels the turn and queues one text-only followup', () => {
+	const seen = { cancel: 0, followup: 0, cause: null, message: null, opts: null };
+	const hard = {
+		id: 'hard-noop',
+		cancel: (cause, opts) => { seen.cancel++; seen.cause = cause; seen.opts = opts; },
+		followup: (message) => { seen.followup++; seen.message = message; }
+	};
+	const c = makeCtx();
+	const noop = (code) => ({ name: 'run_code', agent: hard, arguments: { code, description: 'No-op' } });
+	assert.equal(c.pre(noop('console.log("one")')).kind, 'next');
+	assert.equal(c.pre(noop('console.log("two")')).kind, 'next');
+	assert.equal(c.pre(noop('console.log("three")')).kind, 'deny');
+	assert.equal(seen.cancel, 0);
+	assert.equal(c.pre(noop('console.log("four")')).kind, 'deny');
+	assert.equal(seen.cancel, 1);
+	assert.equal(seen.cause.kind, 'hook');
+	assert.equal(seen.opts.keepInbox, true);
+	assert.equal(seen.followup, 1);
+	assert.equal(seen.message.role, 'user');
+	assert.match(seen.message.content[0].text, /上一回合/);
+	c.pre(noop('console.log("five")'));
+	assert.equal(seen.cancel, 2);
+	assert.equal(seen.followup, 1);
+});
+
+test('the second status-probe denial also cancels and follows up', () => {
+	const seen = { cancel: 0, followup: 0 };
+	const hard = {
+		id: 'hard-status',
+		cancel: () => { seen.cancel++; },
+		followup: () => { seen.followup++; }
+	};
+	const c = makeCtx();
+	const probe = (code) => ({ name: 'run_code', agent: hard, arguments: { code } });
+	c.pre(probe(STATUS));
+	c.pre(probe(STATUS));
+	c.pre(probe(STATUS));
+	assert.equal(c.pre(probe(STATUS)).kind, 'deny');
+	assert.equal(seen.cancel, 0);
+	assert.equal(c.pre(probe(STATUS)).kind, 'deny');
+	assert.equal(seen.cancel, 1);
+	assert.equal(seen.followup, 1);
+});
+
 
 test('a JS parse error gets the backtick hint exactly once', () => {
 	const c = makeCtx();

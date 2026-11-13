@@ -1,7 +1,7 @@
 {
   "name": "dsh-wait-guard",
-  "version": "0.3.0",
-  "description": "Bounded waiting and no-progress polling breaker for DeepSeek Harness: caps job_output wait budgets, refuses runaway foreground commands nested in run_code, explains run_code deadlines and parse errors, and stops status-polling or no-op run_code loops after a few no-progress calls. 让「等」「轮询」和「空调用」都有刹车。",
+  "version": "0.3.1",
+  "description": "Bounded waiting and no-progress polling breaker for DeepSeek Harness: caps job_output wait budgets, refuses runaway foreground commands nested in run_code, explains run_code deadlines and parse errors, stops status-polling or no-op run_code loops after a few no-progress calls, and hard-stops a turn that keeps ignoring the denial. 让「等」「轮询」「空调用」都有刹车，而且刹得住。",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",

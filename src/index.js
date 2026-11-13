@@ -30,6 +30,9 @@
 //      A work call resets both counters; a status probe does not reset the
 //      no-op counter, so alternating the two cannot evade either one.
 //   6. A JS parse error gets a hint naming unescaped backticks.
+//   7. After the second denial of either loop, the turn is cancelled and a
+//      synthetic user message asks for a text-only answer, so the model cannot
+//      keep emitting denied calls forever. One auto-recovery per 120 s.
 //
 // Everything fails open: unknown tools, missing services, missing jobs.
 //
@@ -90,6 +93,7 @@ function apply(ctx, config) {
 	const started = new WeakMap();
 	const probes = new Map();
 	const noops = new Map();
+	const recoveries = new Map();
 
 	const argsOf = (exec) => {
 		const a = exec && exec.arguments;
@@ -132,6 +136,7 @@ function apply(ctx, config) {
 		st.count += 1;
 		if (st.count < cfg.probeLimit) return null;
 		st.denied += 1;
+		if (st.denied >= 2) hardStop(exec);
 		return { kind: 'deny', reason: probeDenyReason(st) };
 	};
 	const noopAt = (exec) => {
@@ -165,7 +170,35 @@ function apply(ctx, config) {
 		st.count += 1;
 		if (st.count < cfg.noopLimit) return null;
 		st.denied += 1;
+		if (st.denied >= 2) hardStop(exec);
 		return { kind: 'deny', reason: noopDenyReason(st) };
+	};
+	const hardStop = (exec) => {
+		const agent = exec && exec.agent;
+		if (!agent || typeof agent.cancel !== 'function') return;
+		try {
+			agent.cancel({ kind: 'hook', reason: 'loop-guard: repeated no-progress tool calls' }, { keepInbox: true });
+		} catch {
+			return;
+		}
+		const key = probeKey(exec);
+		const now = Date.now();
+		if (now - (recoveries.get(key) || 0) < cfg.probeWindowMs) return;
+		if (typeof agent.followup !== 'function') return;
+		recoveries.set(key, now);
+		try {
+			agent.followup({
+				id: globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function' ? globalThis.crypto.randomUUID() : 'loop-guard-' + now,
+				role: 'user',
+				content: [{
+					type: 'text',
+					text: '[loop-guard] 上一回合因连续无进展的工具调用被强制中止。现在只输出文字：直接回答用户上一条请求，不要再调用任何工具。'
+				}],
+				source: { kind: 'user' }
+			});
+		} catch {
+			// best effort; the cancel above already stopped the turn
+		}
 	};
 	const isNoop = (a) => {
 		const desc = typeof a.description === 'string' ? a.description : '';

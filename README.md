@@ -1,6 +1,6 @@
 # dsh-wait-guard
 
-给「等待」「轮询」和空调用加预算的 DSH 插件：限制后台任务的 `job_output wait`，拦截嵌套在 `run_code` 里的超长前台命令，在 `run_code` 撞上自己的程序截止时间或 JS 解析错误时说清楚原因，并熔断「连续只查状态」和「连续 no-op」的循环。
+给「等待」「轮询」和空调用加预算的 DSH 插件：限制后台任务的 `job_output wait`，拦截嵌套在 `run_code` 里的超长前台命令，在 `run_code` 撞上自己的程序截止时间或 JS 解析错误时说清楚原因，熔断「连续只查状态」和「连续 no-op」的循环，并在模型连续无视拒绝时强制中止回合并自动要一次文字回答。
 
 ## 安装
 
@@ -14,7 +14,7 @@ dsh plugin --profile <profile> add github:Lion-Li-git/dsh-wait-guard
 
 ## 它解决什么
 
-六件事，全部走宿主平面的 `tools/pre-execute` / `tools/post-execute`，不改任何工具实现。
+七件事，全部走宿主平面的 `tools/pre-execute` / `tools/post-execute`，不改任何工具实现。
 
 1. **`job_output` 的 `wait: true` 变成有预算的探测**：单次 ≤ 20 秒；只允许在任务开始后 2 分钟内；同一个任务累计 ≤ 40 秒。超出的调用立即被拒（1ms 级），并把「结束回合、等完成通知」写进拒绝理由。
 2. **嵌套在 `run_code` 里的前台 `pwsh`**：如果它的 `timeoutMs` 超过 `run_code` 的程序截止时间（默认 120000ms），直接拒绝——那条命令会在截止点被连带中止，等也白等。
@@ -22,6 +22,7 @@ dsh plugin --profile <profile> add github:Lion-Li-git/dsh-wait-guard
 4. **状态轮询熔断**：同一 agent 在 120 秒内连续 4 次「只查状态」就 `deny`——`run_code` / 直接 `pwsh` 的命令体只读 job 状态、日志尾巴、进程列表、时钟，且不含写操作；直接的无 wait `job_output` 也算。拒绝理由要求「用已知状态直接回答、说明 job 仍在跑、结束 turn」，第 2 次拒绝升级为「后续每次探针都会被拒」。任何写操作/工作型命令（`git add`、`npm run`、`node tools/`、`write`/`edit`、`Start-Process` 等）把计数清零；超过 120 秒自动清零。
 5. **no-op run_code 熔断**：同一 agent 在 120 秒内连续 3 次「什么也不做」就 `deny`——`run_code` 的 `description` 是 `No-op`、程序是空的/只有 `return`/只有 `console.log("常数")`。拒绝理由要求「不要再调工具，直接把最终回答写进 assistant 文本」。工作调用重置计数；状态探针**不**重置它，所以「空调用 / 查状态」交替也逃不掉。
 6. **JS 解析错误提示**：`run_code` 报 `Expected ',', got 'ident'` / `Unexpected token` / `Invalid or unexpected token` 时，追加「模板字符串反引号」提示，并报出程序里的反引号个数。PowerShell 的 `` `t `` / `` `n ``、Markdown 里的反引号都会提前结束 JS 模板。
+7. **连续无视拒绝时强制中止 + 自动恢复**：同一种循环第 2 次被拒后，插件会 `cancel` 当前 turn（不是只回一条错误），并 `followup` 一条 user 角色的「只输出文字、直接回答」消息，让模型在新 turn 里收尾。每 120 秒最多自动恢复一次；恢复后如果又空转，只中止、不再自动 followup，避免恢复本身变成循环。
 
 ## 为什么要这个
 
@@ -76,6 +77,7 @@ no-op 循环是第三层（session af4c3351，11-13）：
 - **拒绝会让当前 `run_code` 程序中止**（未 catch 的 `ToolCallError`）——这是刻意的停止信号，已经完成的副作用不回滚。
 - **状态探针是启发式**：用 `node -e` 读日志之类的方式不会被识别；它拦的是最常见的 `job_output` / 日志 tail / 进程检查。
 - **no-op 也是启发式**：空程序、`description: "No-op"`、单条 `console.log("常数")` 会被计数；`console.log(j.job.status)` 这类有计算的不算。第一次、第二次空调用放行，第 3 次拒绝。
+- **强制中止**：同一种循环第 2 次拒绝会 `cancel` 当前 turn（`keepInbox`，保留用户中途消息），并 `followup` 一条 text-only 消息；120 秒内只自动恢复一次，恢复后再空转只中止、不重复 followup。
 - 只影响模型发起的调用；人手动跑的终端/命令不受影响。
 
 ## 测试
@@ -84,10 +86,11 @@ no-op 循环是第三层（session af4c3351，11-13）：
 npm test
 ```
 
-`node --test` 覆盖：4 次探针拒绝与升级、工作命令重置、`wait: true` 不受探针计数影响、直接 `job_output` / `pwsh`、嵌套 `pwsh` 超时、no-op 第 3 次拒绝与升级、状态探针不重置 no-op 计数、解析错误提示只加一次、deadline 提示仍生效。
+`node --test` 覆盖：4 次探针拒绝与升级、工作命令重置、`wait: true` 不受探针计数影响、直接 `job_output` / `pwsh`、嵌套 `pwsh` 超时、no-op 第 3 次拒绝与升级、状态探针不重置 no-op 计数、第 2 次拒绝后的 cancel/followup 与 120 秒恢复上限、解析错误提示只加一次、deadline 提示仍生效。
 
 ## 版本
 
+- **0.3.1**（2026-11-13）：第 2 次拒绝后强制 `cancel` 当前 turn，并自动 `followup` 一条 text-only 消息；120 秒内最多恢复一次。
 - **0.3.0**（2026-11-13）：新增 no-op `run_code` 熔断（`noopLimit`）；空调用与状态探针互相不重置，交替也逃不掉。
 - **0.2.0**（2026-11-11）：新增状态轮询熔断（`probeLimit` / `probeWindowMs`）与 `run_code` 解析错误提示。
 - **0.1.0**：`job_output wait` 预算、嵌套 `pwsh` 超时拦截、`run_code` 慢/截止提示。
