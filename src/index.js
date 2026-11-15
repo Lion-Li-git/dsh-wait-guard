@@ -104,11 +104,15 @@ function apply(ctx, config) {
 		return a;
 	};
 	const probeKey = (exec) => (exec && exec.agent && exec.agent.id) || 'root';
+	const currentTurn = (exec) => {
+		const phase = exec && exec.agent && exec.agent.phase;
+		return phase && phase.kind === 'running' ? phase.turn : undefined;
+	};
 	const probeAt = (exec) => {
 		const key = probeKey(exec);
 		let st = probes.get(key);
 		if (!st) {
-			st = { count: 0, lastAt: 0, denied: 0 };
+			st = { count: 0, lastAt: 0, denied: 0, turn: currentTurn(exec) };
 			probes.set(key, st);
 		}
 		return st;
@@ -123,6 +127,12 @@ function apply(ctx, config) {
 	const probeBump = (exec, isProbe) => {
 		const now = Date.now();
 		const st = probeAt(exec);
+		const turn = currentTurn(exec);
+		if (st.turn !== turn) {
+			st.count = 0;
+			st.denied = 0;
+			st.turn = turn;
+		}
 		if (now - st.lastAt > cfg.probeWindowMs) {
 			st.count = 0;
 			st.denied = 0;
@@ -136,14 +146,13 @@ function apply(ctx, config) {
 		st.count += 1;
 		if (st.count < cfg.probeLimit) return null;
 		st.denied += 1;
-		if (st.denied >= 2) hardStop(exec);
 		return { kind: 'deny', reason: probeDenyReason(st) };
 	};
 	const noopAt = (exec) => {
 		const key = probeKey(exec);
 		let st = noops.get(key);
 		if (!st) {
-			st = { count: 0, lastAt: 0, denied: 0 };
+			st = { count: 0, lastAt: 0, denied: 0, turn: currentTurn(exec) };
 			noops.set(key, st);
 		}
 		return st;
@@ -157,6 +166,12 @@ function apply(ctx, config) {
 	const noopBump = (exec, isNoop) => {
 		const now = Date.now();
 		const st = noopAt(exec);
+		const turn = currentTurn(exec);
+		if (st.turn !== turn) {
+			st.count = 0;
+			st.denied = 0;
+			st.turn = turn;
+		}
 		if (now - st.lastAt > cfg.probeWindowMs) {
 			st.count = 0;
 			st.denied = 0;

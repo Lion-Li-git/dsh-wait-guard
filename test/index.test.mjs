@@ -177,10 +177,11 @@ test('the second no-op denial cancels the turn and queues one text-only followup
 	assert.equal(seen.followup, 1);
 });
 
-test('the second status-probe denial also cancels and follows up', () => {
+test('status probes deny but do not cancel the turn', () => {
 	const seen = { cancel: 0, followup: 0 };
 	const hard = {
 		id: 'hard-status',
+		phase: { kind: 'running', turn: 1 },
 		cancel: () => { seen.cancel++; },
 		followup: () => { seen.followup++; }
 	};
@@ -190,10 +191,46 @@ test('the second status-probe denial also cancels and follows up', () => {
 	c.pre(probe(STATUS));
 	c.pre(probe(STATUS));
 	assert.equal(c.pre(probe(STATUS)).kind, 'deny');
-	assert.equal(seen.cancel, 0);
 	assert.equal(c.pre(probe(STATUS)).kind, 'deny');
-	assert.equal(seen.cancel, 1);
-	assert.equal(seen.followup, 1);
+	assert.equal(seen.cancel, 0);
+	assert.equal(seen.followup, 0);
+});
+
+test('a new turn resets the status-probe counter', () => {
+	const seen = { cancel: 0, followup: 0 };
+	const hard = {
+		id: 'turn-status',
+		phase: { kind: 'running', turn: 1 },
+		cancel: () => { seen.cancel++; },
+		followup: () => { seen.followup++; }
+	};
+	const c = makeCtx();
+	const probe = (code) => ({ name: 'run_code', agent: hard, arguments: { code } });
+	c.pre(probe(STATUS));
+	c.pre(probe(STATUS));
+	c.pre(probe(STATUS));
+	assert.equal(c.pre(probe(STATUS)).kind, 'deny');
+	hard.phase = { kind: 'running', turn: 2 };
+	assert.equal(c.pre(probe(STATUS)).kind, 'next');
+	assert.equal(seen.cancel, 0);
+});
+
+test('a new turn resets the no-op counter', () => {
+	const seen = { cancel: 0, followup: 0 };
+	const hard = {
+		id: 'turn-noop',
+		phase: { kind: 'running', turn: 1 },
+		cancel: () => { seen.cancel++; },
+		followup: () => { seen.followup++; }
+	};
+	const c = makeCtx();
+	const noop = (code) => ({ name: 'run_code', agent: hard, arguments: { code, description: 'No-op' } });
+	c.pre(noop('console.log("one")'));
+	c.pre(noop('console.log("two")'));
+	assert.equal(c.pre(noop('console.log("three")')).kind, 'deny');
+	hard.phase = { kind: 'running', turn: 2 };
+	assert.equal(c.pre(noop('console.log("four")')).kind, 'next');
+	assert.equal(seen.cancel, 0);
 });
 
 
